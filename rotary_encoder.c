@@ -207,28 +207,61 @@ static void _isr_rotenc(void * args)
     }
 }
 
-esp_err_t rotary_encoder_init(rotary_encoder_info_t * info, gpio_num_t pin_a, gpio_num_t pin_b)
+static void _isr_button(void * args)
+{
+    rotary_encoder_info_t * info = (rotary_encoder_info_t *)args;
+    int state = gpio_get_level(CONFIG_ROT_ENC_BUTTON_GPIO);
+
+    if (info->queue)
+    {
+        rotary_encoder_event_t queue_event =
+        {
+            .state =
+            {
+                .position = info->state.position,
+                .direction = (state ? ROTARY_ENCODER_BUTTON_RELEASE : ROTARY_ENCODER_BUTTON_PRESS),
+            },
+        };
+        BaseType_t task_woken = pdFALSE;
+        xQueueOverwriteFromISR(info->queue, &queue_event, &task_woken);
+        if (task_woken)
+        {
+            portYIELD_FROM_ISR();
+        }
+    }
+}
+
+esp_err_t rotary_encoder_init(rotary_encoder_info_t * info, gpio_num_t pin_a, gpio_num_t pin_b, gpio_num_t pin_button)
 {
     esp_err_t err = ESP_OK;
     if (info)
     {
         info->pin_a = pin_a;
         info->pin_b = pin_b;
+        info->pin_button = pin_button;
         info->table = &_ttable_full[0];   //enable_half_step ? &_ttable_half[0] : &_ttable_full[0];
         info->table_state = R_START;
         info->state.position = 0;
         info->state.direction = ROTARY_ENCODER_DIRECTION_NOT_SET;
 
         // configure GPIOs
-        gpio_pad_select_gpio(info->pin_a);
+        gpio_reset_pin(info->pin_a);
         gpio_set_pull_mode(info->pin_a, GPIO_PULLUP_ONLY);
         gpio_set_direction(info->pin_a, GPIO_MODE_INPUT);
         gpio_set_intr_type(info->pin_a, GPIO_INTR_ANYEDGE);
 
-        gpio_pad_select_gpio(info->pin_b);
+        gpio_reset_pin(info->pin_b);
         gpio_set_pull_mode(info->pin_b, GPIO_PULLUP_ONLY);
         gpio_set_direction(info->pin_b, GPIO_MODE_INPUT);
         gpio_set_intr_type(info->pin_b, GPIO_INTR_ANYEDGE);
+
+        if (pin_button >= 0) {
+            gpio_reset_pin(pin_button);
+            gpio_set_pull_mode(pin_button, GPIO_PULLUP_ONLY);
+            gpio_set_direction(pin_button, GPIO_MODE_INPUT);
+            gpio_set_intr_type(pin_button, GPIO_INTR_ANYEDGE);
+            gpio_isr_handler_add(pin_button, _isr_button, info);
+        }
 
         // install interrupt handlers
         gpio_isr_handler_add(info->pin_a, _isr_rotenc, info);
